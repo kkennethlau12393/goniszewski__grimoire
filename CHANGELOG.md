@@ -4,15 +4,44 @@ All notable changes to Grimoire will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-08-12
+
+### Added
+- AI provider model picker in Settings: a searchable OpenRouter model combobox
+  with a Free models only filter and custom (typed) model entry, backed by a
+  new `GET /settings/ai-models` catalog endpoint (SSRF-guarded, size-capped).
+- Route-level error boundary so malformed API data cannot blank the app.
+
+### Fixed
+- OpenRouter default model normalized to `openai/gpt-latest` (the `~` fallback
+  prefix is dropped and stored values are stripped on load).
+- Concurrent same-URL bookmark creates return the existing bookmark instead of
+  failing with a raw error; trashed/archived duplicates get a clear 409.
+- Mutations await daemon confirmation before success toasts, dialog close, and
+  undo actions; failures surface as destructive toasts.
+- Bulk category moves use category IDs, and list/search filters prefer
+  `category_id` over the category name.
+- The bookmarklet embeds the token and daemon URL via `JSON.stringify` so
+  quotes or backslashes cannot break the generated script.
+
+### Security
+- SSRF hardening: outbound page fetches and update checks follow redirects
+  manually and validate every hop; private hosts, embedded credentials, and
+  non-http(s) schemes are rejected at bookmarks, capture, MCP, and import.
+- Remote upgrades require HTTPS release bases and detached signatures by
+  default, with optional signing-key fingerprint pinning and download size
+  caps; `--allow-unsigned` / `LITTLEIMP_ALLOW_UNSIGNED_UPGRADE=1` is an
+  explicit escape hatch.
+- The daemon refuses non-loopback binds unless running in a container or
+  `LITTLEIMP_ALLOW_NON_LOOPBACK_BIND=1` is set explicitly.
+- Mutating HTTP routes get default JSON body limits; restore no longer accepts
+  `allow_unsafe_no_checksum` over the HTTP API.
+
 ## [1.0.0] - 2026-07-20
 
 ### Changed
 - General-availability release. The `littleimp`/`littleimpd` daemon and CLI
   tooling names are stable on-disk identifiers and remain unchanged.
-
-## [Unreleased]
-
-No unreleased changes.
 
 ## [1.0.1] - 2026-08-03
 
