@@ -314,7 +314,7 @@ function verifySignatureIfPresent(
   const resolvedSignaturePath = signaturePath ? resolve(signaturePath) : `${archivePath}.asc`;
   if (!existsSync(resolvedSignaturePath)) return false;
   const run = runner ?? defaultInstallerRunner;
-  const result = run("gpg", ["--verify", resolvedSignaturePath, archivePath], {
+  const result = run("gpg", ["--batch", "--status-fd", "1", "--verify", resolvedSignaturePath, archivePath], {
     encoding: "utf8",
     env: sanitizedEnv(env),
   });
@@ -328,10 +328,14 @@ function verifySignatureIfPresent(
 
   const allowedFingerprints = configuredSigningFingerprints(env);
   if (allowedFingerprints.length > 0) {
-    const combined = `${outputToString(result.stderr)}\n${outputToString(result.stdout)}`;
-    const found = [...combined.matchAll(/([A-F0-9]{40}|[A-F0-9]{64})/gi)].map((m) =>
-      m[1].toUpperCase()
-    );
+    // GPG's human-readable output includes signer UIDs and primary-key
+    // summaries, so it must not be used for key pinning. `VALIDSIG` is the
+    // machine-readable record for the key that produced the signature.
+    const found = outputToString(result.stdout)
+      .split(/\r?\n/)
+      .map((line) => line.match(/^\[GNUPG:\]\s+VALIDSIG\s+([A-F0-9]{40}|[A-F0-9]{64})(?:\s|$)/i)?.[1])
+      .filter((fingerprint): fingerprint is string => Boolean(fingerprint))
+      .map((fingerprint) => fingerprint.toUpperCase());
     const matched = found.some((fp) => allowedFingerprints.includes(fp));
     if (!matched) {
       throw new UpgradeError(

@@ -108,7 +108,8 @@ function createUpgradeArchiveFixture(options: { badChecksum?: boolean; signature
 
 function makeUpgradeHarness(
   healthVersion = "0.2.0-beta",
-  runCommand?: (command: string, args: string[]) => { status: number; stderr?: string }
+  runCommand?: (command: string, args: string[]) => { status: number; stdout?: string; stderr?: string },
+  env: Record<string, string | undefined> = {}
 ) {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -130,7 +131,7 @@ function makeUpgradeHarness(
         signal: null,
         output: ["", "", result.stderr ?? ""],
         pid: 123,
-        stdout: "",
+        stdout: result.stdout ?? "",
         stderr: result.stderr ?? "",
       };
     }
@@ -151,7 +152,7 @@ function makeUpgradeHarness(
     stderr,
     run: (args: string[]) =>
       runLittleImpCli(args, {
-        env: {},
+        env,
         fetch: fetchImpl as typeof fetch,
         spawnSync: spawnImpl,
         stdout: (line) => stdout.push(line),
@@ -397,6 +398,46 @@ describe("littleimp update CLI", () => {
     expect(harness.stderr.join("\n")).toContain("Signature verification failed");
   });
 
+  it("pins the signing fingerprint from GPG VALIDSIG status instead of human output", async () => {
+    const fixture = createUpgradeArchiveFixture({ signature: true });
+    const allowedFingerprint = "AAAABBBBCCCCDDDDEEEEFFFF0000111122223333";
+    const actualFingerprint = "1111222233334444555566667777888899990000";
+    const harness = makeUpgradeHarness(
+      fixture.version,
+      (command) =>
+        command === "gpg"
+          ? {
+              status: 0,
+              stderr: `gpg: Good signature from Test Key\nPrimary key fingerprint: ${allowedFingerprint}`,
+              stdout: `[GNUPG:] VALIDSIG ${actualFingerprint} 20260812T000000Z 0 0 1 10 00 ${actualFingerprint}`,
+            }
+          : { status: 0 },
+      { LITTLEIMP_UPGRADE_SIGNING_KEY_FINGERPRINTS: allowedFingerprint }
+    );
+
+    const code = await harness.run([
+      "update",
+      "install",
+      "--archive",
+      fixture.archivePath,
+      "--checksum",
+      fixture.checksumPath,
+      "--signature",
+      fixture.signaturePath,
+    ]);
+
+    expect(code).toBe(1);
+    expect(harness.spawnCalls[0]?.args).toEqual([
+      "--batch",
+      "--status-fd",
+      "1",
+      "--verify",
+      fixture.signaturePath,
+      fixture.archivePath,
+    ]);
+    expect(harness.stderr.join("\n")).toContain("Signature key fingerprint is not in");
+  });
+
   it("downloads a selected release artifact before running the packaged upgrade", async () => {
     const fixture = createUpgradeArchiveFixture({ signature: true });
     const stdout: string[] = [];
@@ -431,8 +472,10 @@ describe("littleimp update CLI", () => {
         signal: null,
         output: ["", "", ""],
         pid: 123,
-        stdout: "",
-        stderr: command === "gpg" ? "gpg: Good signature from Test Key\nPrimary key fingerprint: AAAABBBBCCCCDDDDEEEEFFFF0000111122223333" : "",
+        stdout: command === "gpg"
+          ? "[GNUPG:] VALIDSIG AAAABBBBCCCCDDDDEEEEFFFF0000111122223333 20260812T000000Z 0 0 1 10 00 AAAABBBBCCCCDDDDEEEEFFFF0000111122223333"
+          : "",
+        stderr: command === "gpg" ? "gpg: Good signature from Test Key" : "",
       };
     };
 
@@ -551,8 +594,10 @@ describe("littleimp update CLI", () => {
         signal: null,
         output: ["", "", ""],
         pid: 123,
-        stdout: "",
-        stderr: command === "gpg" ? "gpg: Good signature\nPrimary key fingerprint: AAAABBBBCCCCDDDDEEEEFFFF0000111122223333" : "",
+        stdout: command === "gpg"
+          ? "[GNUPG:] VALIDSIG AAAABBBBCCCCDDDDEEEEFFFF0000111122223333 20260812T000000Z 0 0 1 10 00 AAAABBBBCCCCDDDDEEEEFFFF0000111122223333"
+          : "",
+        stderr: command === "gpg" ? "gpg: Good signature" : "",
       };
     };
 
