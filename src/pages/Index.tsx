@@ -44,6 +44,9 @@ import { Plus, Upload, X, BookmarkIcon, List, LayoutGrid, ArrowUpDown, CheckSqua
 import { toast } from "@/hooks/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { loadDemoData } from "@/lib/api";
+import { isDemoMode } from "@/demo/enabled";
+import { DemoInstallPrompt } from "@/components/DemoInstallPrompt";
+import { generatedFavicon } from "@/lib/media-url";
 
 const Index = () => {
   const store = useBookmarks();
@@ -54,6 +57,7 @@ const Index = () => {
   const [detailOpen, setDetailOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [installPromptOpen, setInstallPromptOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -106,7 +110,8 @@ const Index = () => {
     const handler = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "n") {
         e.preventDefault();
-        setAddOpen(true);
+        if (isDemoMode) setInstallPromptOpen(true);
+        else setAddOpen(true);
       }
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
@@ -132,6 +137,10 @@ const Index = () => {
         if (url.protocol === "http:" || url.protocol === "https:") {
           if (url.username || url.password) return;
           e.preventDefault();
+          if (isDemoMode) {
+            setInstallPromptOpen(true);
+            return;
+          }
           void addBookmark(text)
             .then(() => {
               toast({ title: "Bookmark added", description: text });
@@ -193,34 +202,47 @@ const Index = () => {
 
   const handleBulkDelete = useCallback(() => {
     const ids = [...selectedIds];
-    const deletedBookmarks = ids
-      .map((id) => store.filteredBookmarks.find((b) => b.id === id) ?? store.bookmarks.find((b) => b.id === id))
-      .filter((b): b is NonNullable<typeof b> => Boolean(b));
+    const deletedBookmarks = ids.map(
+      (id) => store.filteredBookmarks.find((b) => b.id === id) ?? store.bookmarks.find((b) => b.id === id) ?? null
+    );
 
-    void Promise.all(ids.map((id) => store.deleteBookmark(id)))
-      .then(() => {
-        const count = deletedBookmarks.length;
-        toast({
-          title: `${count} bookmark${count !== 1 ? "s" : ""} deleted`,
-          action: (
-            <ToastAction
-              altText="Undo delete"
-              onClick={() => deletedBookmarks.forEach((b) => void store.restoreBookmark(b.id))}
-            >
-              Undo
-            </ToastAction>
-          ),
-        });
-        exitSelectionMode();
-        setBulkDeleteOpen(false);
-      })
-      .catch((err) => {
+    void Promise.allSettled(ids.map((id) => store.deleteBookmark(id))).then((results) => {
+      const succeeded = results.flatMap((result, index) => {
+        if (result.status !== "fulfilled") return [];
+        const bookmark = deletedBookmarks[index];
+        return bookmark ? [bookmark] : [];
+      });
+      const failed = results.filter((result) => result.status === "rejected");
+
+      if (succeeded.length === 0) {
+        const firstError = failed[0]?.status === "rejected" ? failed[0].reason : undefined;
         toast({
           title: "Could not delete bookmarks",
-          description: err instanceof Error ? err.message : "Unknown error",
+          description: firstError instanceof Error ? firstError.message : "Unknown error",
           variant: "destructive",
         });
+        return;
+      }
+
+      const count = succeeded.length;
+      toast({
+        title:
+          failed.length > 0
+            ? `Deleted ${count} of ${ids.length} bookmarks`
+            : `${count} bookmark${count !== 1 ? "s" : ""} deleted`,
+        description: failed.length > 0 ? `${failed.length} could not be deleted` : undefined,
+        action: (
+          <ToastAction
+            altText="Undo delete"
+            onClick={() => succeeded.forEach((b) => void store.restoreBookmark(b.id))}
+          >
+            Undo
+          </ToastAction>
+        ),
       });
+      exitSelectionMode();
+      setBulkDeleteOpen(false);
+    });
   }, [selectedIds, store, exitSelectionMode]);
 
   const handleBulkMoveCategory = useCallback((categoryId: string) => {
@@ -236,15 +258,7 @@ const Index = () => {
 
   const handleBulkReadLater = useCallback((readLater: boolean) => {
     const ids = [...selectedIds];
-    void Promise.all(
-      ids.map(
-        (id) =>
-          new Promise<void>((resolve, reject) => {
-            if (readLater) store.markReadLater(id, { onSuccess: () => resolve(), onError: () => reject(new Error("failed")) });
-            else store.clearReadLater(id, { onSuccess: () => resolve(), onError: () => reject(new Error("failed")) });
-          })
-      )
-    )
+    void Promise.all(ids.map((id) => store.setReadLater(id, readLater)))
       .then(() => {
         toast({
           title: readLater
@@ -286,7 +300,7 @@ const Index = () => {
       rawTitle: bm.title,
       summary: bm.description ?? "",
       domain: bm.domain,
-      favicon: bm.favicon_url ?? `https://www.google.com/s2/favicons?domain=${bm.domain}&sz=32`,
+      favicon: bm.favicon_url ?? generatedFavicon(bm.domain),
       tags: bm.tags,
       category: "Uncategorized",
       category_id: bm.category_id,
@@ -381,7 +395,7 @@ const Index = () => {
 
         <div className="flex-1 flex flex-col min-w-0">
           <DaemonOfflineBanner online={online} loading={daemonChecking} />
-          {!settingsLoading && <DegradedModeBanner aiEnabled={aiEnabled} />}
+          {!isDemoMode && !settingsLoading && <DegradedModeBanner aiEnabled={aiEnabled} />}
           {updateAvailable && updateCheckResult?.latest?.tag && updateCheckResult?.current_version && (
             <UpdateAvailableBanner
               latestTag={updateCheckResult.latest.tag}
@@ -418,11 +432,21 @@ const Index = () => {
                   ...store.libraryParityFilterParams,
                 }}
               />
-              <Button variant="outline" size="sm" onClick={() => setImportOpen(true)} className="hidden sm:flex">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => isDemoMode ? setInstallPromptOpen(true) : setImportOpen(true)}
+                className="hidden sm:flex"
+                aria-label={isDemoMode ? "Import requires installing Grimoire" : "Import bookmarks"}
+              >
                 <Upload className="h-3.5 w-3.5" />
                 {showButtonLabels && <span className="ml-1.5">Import</span>}
               </Button>
-              <Button size="sm" aria-label="Add bookmark" onClick={() => setAddOpen(true)}>
+              <Button
+                size="sm"
+                aria-label={isDemoMode ? "Adding bookmarks requires installing Grimoire" : "Add bookmark"}
+                onClick={() => isDemoMode ? setInstallPromptOpen(true) : setAddOpen(true)}
+              >
                 <Plus className="h-3.5 w-3.5" />
                 {showButtonLabels && <span className="ml-1.5 hidden sm:inline">Add</span>}
               </Button>
@@ -710,16 +734,16 @@ const Index = () => {
                   Save links you want to read later, revisit, or organise. Paste a URL anywhere on this page to add it instantly.
                 </p>
                 <div className="flex gap-3">
-                  <Button onClick={() => setAddOpen(true)}>
+                  <Button onClick={() => isDemoMode ? setInstallPromptOpen(true) : setAddOpen(true)}>
                     <Plus className="h-4 w-4 mr-2" />
                     Add your first bookmark
                   </Button>
-                  <Button variant="outline" onClick={() => setImportOpen(true)}>
+                  <Button variant="outline" onClick={() => isDemoMode ? setInstallPromptOpen(true) : setImportOpen(true)}>
                     <Upload className="h-4 w-4 mr-2" />
                     Import from browser
                   </Button>
                 </div>
-                <div className="mt-4">
+                {!isDemoMode && <div className="mt-4">
                   <Button
                     variant="ghost"
                     size="sm"
@@ -743,7 +767,7 @@ const Index = () => {
                     <BookmarkIcon className="h-3.5 w-3.5 mr-1.5" />
                     Load demo bookmarks
                   </Button>
-                </div>
+                </div>}
               </div>
             ) : (
               /* No results from search / filters */
@@ -756,11 +780,11 @@ const Index = () => {
                     : "No bookmarks match the active filters."}
                 </p>
                 <div className="flex gap-2 mt-4">
-                  <Button size="sm" onClick={() => setAddOpen(true)}>
+                  <Button size="sm" onClick={() => isDemoMode ? setInstallPromptOpen(true) : setAddOpen(true)}>
                     <Plus className="h-3.5 w-3.5 mr-1.5" />
                     Add Bookmark
                   </Button>
-                  <Button variant="outline" size="sm" onClick={() => setImportOpen(true)}>
+                  <Button variant="outline" size="sm" onClick={() => isDemoMode ? setInstallPromptOpen(true) : setImportOpen(true)}>
                     <Upload className="h-3.5 w-3.5 mr-1.5" />
                     Import
                   </Button>
@@ -839,22 +863,27 @@ const Index = () => {
       </AlertDialog>
 
       {/* Dialogs */}
-      <AddBookmarkDialog
+      {!isDemoMode && <AddBookmarkDialog
         open={addOpen}
         onOpenChange={setAddOpen}
         onAdd={store.addBookmark}
-      />
-      <ImportDialog
+      />}
+      {!isDemoMode && <ImportDialog
         open={importOpen}
         onOpenChange={setImportOpen}
         onImport={store.importBookmarks}
-      />
+      />}
+      {isDemoMode && <DemoInstallPrompt
+        open={installPromptOpen}
+        onOpenChange={setInstallPromptOpen}
+        action="Add or import bookmarks"
+      />}
       <KeyboardShortcuts />
       <AIPalette
         open={paletteOpen}
         onOpenChange={setPaletteOpen}
         onSelectBookmark={handlePaletteSelectBookmark}
-        onAddBookmark={() => setAddOpen(true)}
+        onAddBookmark={() => isDemoMode ? setInstallPromptOpen(true) : setAddOpen(true)}
       />
       <BookmarkDetail
         bookmark={selectedBookmark}
