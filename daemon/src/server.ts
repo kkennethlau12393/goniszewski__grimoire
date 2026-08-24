@@ -117,7 +117,7 @@ function isValidCspSourceOrigin(origin: string): boolean {
   }
 }
 
-function securityHeaders(): Record<string, string> {
+function securityHeaders(path?: string): Record<string, string> {
   const connectSrc = ["'self'", ...[...allowedBrowserOrigins()].filter(isValidCspSourceOrigin)].join(" ");
   return {
     "Content-Security-Policy": [
@@ -132,7 +132,10 @@ function securityHeaders(): Record<string, string> {
       "font-src 'self' data: https://fonts.gstatic.com",
       `connect-src ${connectSrc}`,
     ].join("; "),
-    "Cross-Origin-Opener-Policy": "same-origin",
+    // The bookmarklet bridge is intentionally opened from arbitrary web pages.
+    // Keep its opener relationship so it can return the capture result via
+    // postMessage; every other daemon document remains isolated.
+    "Cross-Origin-Opener-Policy": path === "/capture/bookmarklet" ? "unsafe-none" : "same-origin",
     "Cross-Origin-Resource-Policy": "same-origin",
     "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=()",
     "Referrer-Policy": "no-referrer",
@@ -163,7 +166,7 @@ function declaredContentLength(c: Context): number | "invalid" | null {
 
 async function applySecurityHeaders(c: Context, next: Next): Promise<void> {
   await next();
-  for (const [name, value] of Object.entries(securityHeaders())) {
+  for (const [name, value] of Object.entries(securityHeaders(c.req.path))) {
     c.header(name, value);
   }
 }
