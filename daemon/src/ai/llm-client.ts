@@ -35,17 +35,6 @@ export interface ChatMessage {
   content: string;
 }
 
-export interface LlmCompletionOptions {
-  jsonMode?: boolean;
-  maxTokens?: number;
-  /**
-   * Return an error message when a successful provider response is not usable
-   * for the caller. The client retries these responses like other transient
-   * provider failures.
-   */
-  validateContent?: (content: string) => string | null;
-}
-
 // ─── Error types ─────────────────────────────────────────────────────────────
 
 export class LlmError extends Error {
@@ -79,7 +68,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 export async function chatCompletion(
   config: LlmConfig,
   messages: ChatMessage[],
-  opts: LlmCompletionOptions = {}
+  opts: { jsonMode?: boolean; maxTokens?: number } = {}
 ): Promise<string> {
   const url = `${config.baseUrl.replace(/\/+$/, "")}/chat/completions`;
   const headers: Record<string, string> = {
@@ -137,28 +126,17 @@ export async function chatCompletion(
       try {
         json = await res.json();
       } catch {
-        throw new LlmError("Failed to parse LLM response JSON", true);
+        throw new LlmError("Failed to parse LLM response JSON", false);
       }
 
       const content = (json as { choices?: Array<{ message?: { content?: string } }> })
         ?.choices?.[0]?.message?.content;
 
       if (typeof content !== "string" || !content.trim()) {
-        throw new LlmError("LLM returned empty content", true);
+        throw new LlmError("LLM returned empty content", false);
       }
 
-      const trimmedContent = content.trim();
-      const validationError = opts.validateContent?.(trimmedContent);
-      if (validationError) {
-        log.warn("LLM response failed validation (retryable)", {
-          attempt,
-          error: validationError,
-          model: config.model,
-        });
-        throw new LlmError(validationError, true);
-      }
-
-      return trimmedContent;
+      return content.trim();
     } catch (err) {
       clearTimeout(timer);
 
